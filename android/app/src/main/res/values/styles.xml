@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Base application theme. -->
+    <style name="AppTheme" parent="Theme.MaterialComponents.Light.DarkActionBar">
+        <!-- Emerald Green primary brand colors -->
+        <item name="colorPrimary">#064e3b</item>
+        <item name="colorPrimaryDark">#022c22</item>
+        <item name="colorAccent">#d97706</item>
+    </style>
+
+    <style name="AppTheme.NoActionBar" parent="Theme.MaterialComponents.Light.NoActionBar">
+        <item name="windowActionBar">false</item>
+        <item name="windowNoTitle">true</item>
+        <item name="android:statusBarColor">#064e3b</item>
+        <item name="android:navigationBarColor">#022c22</item>
+    </style>
+
+    <style name="AppTheme.NoActionBarLaunch" parent="AppTheme.NoActionBar">
+        <item name="android:windowBackground">#064e3b</item>
+    </style>
+</resources>

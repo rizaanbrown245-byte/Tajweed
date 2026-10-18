@@ -1,0 +1,8 @@
+{
+  "name": "TajweedAI",
+  "description": "Personal Qur’anic recitation and Tajweed learning assistant adhering to Hafs ‘an ‘Asim with verified rule evaluation and Islamic scholarly grounding.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,44 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-quran: 'Amiri Quran', 'Amiri', 'Scheherazade New', serif;
+  --font-arabic: 'Amiri', 'Scheherazade New', 'Traditional Arabic', serif;
+}
+
+@layer utilities {
+  .font-quran {
+    font-family: var(--font-quran);
+    line-height: 2.3;
+    direction: rtl;
+    text-rendering: optimizeLegibility;
+  }
+  .font-arabic {
+    font-family: var(--font-arabic);
+    direction: rtl;
+  }
+}
+
+/* Custom scrollbar for desktop and webview */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(6, 78, 59, 0.2);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(6, 78, 59, 0.4);
+}
+
+/* Safe area insets for mobile & Android notch */
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 1rem);
+}
+.pt-safe {
+  padding-top: env(safe-area-inset-top, 1rem);
+}
