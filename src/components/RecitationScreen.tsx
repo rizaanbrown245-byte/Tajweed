@@ -89,8 +89,12 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
   onNavigateToRule,
   onAskAssistant
 }) => {
-  // Mode selection: 'free' (allow reader to read, AI detects & picks errors) vs 'guided' (pick specific ayah)
-  const [recitationMode, setRecitationMode] = useState<'free' | 'guided'>('free');
+  // Mode selection: 'free' (allow reader to read, AI detects & picks errors) vs 'guided' (pick specific ayah) vs 'follow' (highlights as you read with speech)
+  const [recitationMode, setRecitationMode] = useState<'free' | 'guided' | 'follow'>('guided');
+
+  // Real-time Speech-Follower / Word Highlighting State
+  const [activeSpeechWordIndex, setActiveSpeechWordIndex] = useState<number | null>(null);
+  const [recitedWordIndices, setRecitedWordIndices] = useState<number[]>([]);
 
   // Surah & Ayah Selection State
   const [selectedSurahNumber, setSelectedSurahNumber] = useState<number>(initialSurah);
@@ -132,6 +136,7 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
   const [userAudioUrl, setUserAudioUrl] = useState<string | null>(null);
   const [isPlayingUserAudio, setIsPlayingUserAudio] = useState<boolean>(false);
   const [isPlayingReferenceAudio, setIsPlayingReferenceAudio] = useState<boolean>(false);
+  const [isLoadingReferenceAudio, setIsLoadingReferenceAudio] = useState<boolean>(false);
   const [recordingDuration, setRecordingDuration] = useState<number>(0);
 
   // Permission & Error Notice
@@ -161,7 +166,7 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
     if (dynamicAyahData && dynamicAyahData.surahNumber === selectedSurahNumber && dynamicAyahData.ayahNumber === selectedAyahNumber) {
       return {
         ...dynamicAyahData,
-        audioUrl: getReciterAudioUrl(selectedReciterId, selectedSurahNumber, selectedAyahNumber)
+        audioUrl: getReciterAudioUrl(selectedReciterId, selectedSurahNumber, selectedAyahNumber, dynamicAyahData.arabicText)
       };
     }
     return getAyah(selectedSurahNumber, selectedAyahNumber, selectedReciterId);
@@ -185,13 +190,13 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
   useEffect(() => {
     const key = `${selectedSurahNumber}:${selectedAyahNumber}`;
     if (!VERIFIED_AYAHS[key]) {
-      fetchAyahFromAPI(selectedSurahNumber, selectedAyahNumber).then(data => {
+      fetchAyahFromAPI(selectedSurahNumber, selectedAyahNumber, selectedReciterId).then(data => {
         if (data) setDynamicAyahData(data);
       });
     } else {
       setDynamicAyahData(null);
     }
-  }, [selectedSurahNumber, selectedAyahNumber]);
+  }, [selectedSurahNumber, selectedAyahNumber, selectedReciterId]);
 
   // Cleanup audio players and speech recognizer on unmount
   useEffect(() => {
@@ -256,6 +261,8 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
     setRecordingDuration(0);
     setRevealMemorizedText(false);
     setLiveSpeechTranscript('');
+    setActiveSpeechWordIndex(null);
+    setRecitedWordIndices([]);
     if (timerIntervalRef.current) {
       clearInterval(timerIntervalRef.current);
       timerIntervalRef.current = null;
@@ -326,7 +333,40 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
         for (let i = 0; i < event.results.length; i++) {
           transcript += event.results[i][0].transcript + ' ';
         }
-        setLiveSpeechTranscript(transcript.trim());
+        const trimmed = transcript.trim();
+        setLiveSpeechTranscript(trimmed);
+
+        // Highlight matching word as user recites
+        if (currentAyah.words && currentAyah.words.length > 0 && trimmed) {
+          const spokenTokens = stripTashkeel(trimmed).toLowerCase().split(/\s+/).filter(Boolean);
+          if (spokenTokens.length > 0) {
+            const lastSpoken = spokenTokens[spokenTokens.length - 1];
+            const prevSpoken = spokenTokens.length > 1 ? spokenTokens[spokenTokens.length - 2] : '';
+
+            let matchedIdx = -1;
+            // Scan for match in the current Ayah words
+            for (let wIdx = 0; wIdx < currentAyah.words.length; wIdx++) {
+              const cleanW = currentAyah.words[wIdx].clean.toLowerCase();
+              if (
+                cleanW === lastSpoken || 
+                (lastSpoken.length >= 3 && cleanW.includes(lastSpoken)) || 
+                (cleanW.length >= 3 && lastSpoken.includes(cleanW)) ||
+                (prevSpoken && (cleanW === prevSpoken || cleanW.includes(prevSpoken)))
+              ) {
+                matchedIdx = wIdx;
+              }
+            }
+
+            if (matchedIdx !== -1) {
+              setActiveSpeechWordIndex(matchedIdx);
+              setRecitedWordIndices(prev => {
+                const s = new Set(prev);
+                for (let k = 0; k <= matchedIdx; k++) s.add(k);
+                return Array.from(s);
+              });
+            }
+          }
+        }
       };
 
       recognizer.onerror = (e: any) => {
@@ -648,28 +688,61 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
     if (isPlayingReferenceAudio && referenceAudioRef.current) {
       referenceAudioRef.current.pause();
       setIsPlayingReferenceAudio(false);
+      setIsLoadingReferenceAudio(false);
     } else {
       if (isPlayingUserAudio && userAudioRef.current) {
         userAudioRef.current.pause();
         setIsPlayingUserAudio(false);
       }
 
-      if (!referenceAudioRef.current || referenceAudioRef.current.src !== currentAyah.audioUrl) {
+      setIsLoadingReferenceAudio(true);
+      const targetUrl = new URL(currentAyah.audioUrl, window.location.href).href;
+
+      if (!referenceAudioRef.current || referenceAudioRef.current.src !== targetUrl) {
         if (referenceAudioRef.current) {
           referenceAudioRef.current.pause();
         }
-        referenceAudioRef.current = new Audio(currentAyah.audioUrl);
-        referenceAudioRef.current.onended = () => setIsPlayingReferenceAudio(false);
-        referenceAudioRef.current.onerror = () => {
+        const audio = new Audio(currentAyah.audioUrl);
+        referenceAudioRef.current = audio;
+        audio.onplaying = () => {
+          setIsLoadingReferenceAudio(false);
+          setIsPlayingReferenceAudio(true);
+        };
+        audio.ontimeupdate = () => {
+          if (audio.duration && currentAyah.words.length > 0) {
+            const fraction = audio.currentTime / audio.duration;
+            const targetIdx = Math.min(
+              currentAyah.words.length - 1,
+              Math.floor(fraction * currentAyah.words.length)
+            );
+            setActiveSpeechWordIndex(targetIdx);
+            setRecitedWordIndices(prev => {
+              const s = new Set(prev);
+              for (let k = 0; k <= targetIdx; k++) s.add(k);
+              return Array.from(s);
+            });
+          }
+        };
+        audio.onended = () => {
           setIsPlayingReferenceAudio(false);
+          setIsLoadingReferenceAudio(false);
+          setActiveSpeechWordIndex(null);
+        };
+        audio.onerror = () => {
+          setIsPlayingReferenceAudio(false);
+          setIsLoadingReferenceAudio(false);
           console.warn('Could not play reference audio from:', currentAyah.audioUrl);
         };
       }
 
       referenceAudioRef.current.currentTime = 0;
-      referenceAudioRef.current.play().then(() => setIsPlayingReferenceAudio(true)).catch(err => {
+      referenceAudioRef.current.play().then(() => {
+        setIsLoadingReferenceAudio(false);
+        setIsPlayingReferenceAudio(true);
+      }).catch(err => {
         console.warn('Playback error:', err);
         setIsPlayingReferenceAudio(false);
+        setIsLoadingReferenceAudio(false);
       });
     }
   };
@@ -717,21 +790,21 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
     <div className="max-w-4xl mx-auto px-4 py-6 space-y-6">
       
       {/* Top Mode Segmented Pill Switcher */}
-      <div className="bg-stone-200/80 p-1 rounded-2xl flex items-center max-w-lg mx-auto shadow-inner border border-stone-300/80">
+      <div className="bg-stone-200/80 p-1 rounded-2xl flex items-center max-w-2xl mx-auto shadow-inner border border-stone-300/80 gap-1">
         <button
           type="button"
           onClick={() => {
             setRecitationMode('free');
             resetRecitationState();
           }}
-          className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2 px-2 sm:px-3 rounded-xl text-xs font-bold transition-all cursor-pointer ${
             recitationMode === 'free'
               ? 'bg-emerald-800 text-white shadow-md'
               : 'text-stone-700 hover:text-stone-950'
           }`}
         >
-          <Sparkles className="w-4 h-4 text-amber-300" />
-          <span>Free Reciter (AI Error Detection)</span>
+          <Sparkles className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+          <span className="truncate">Free Reciter</span>
         </button>
 
         <button
@@ -740,14 +813,30 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
             setRecitationMode('guided');
             resetRecitationState();
           }}
-          className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2 px-2 sm:px-3 rounded-xl text-xs font-bold transition-all cursor-pointer ${
             recitationMode === 'guided'
               ? 'bg-emerald-800 text-white shadow-md'
               : 'text-stone-700 hover:text-stone-950'
           }`}
         >
-          <BookMarked className="w-4 h-4 text-emerald-300" />
-          <span>Select Specific Ayah</span>
+          <BookMarked className="w-3.5 h-3.5 text-emerald-300 shrink-0" />
+          <span className="truncate">Ayah Guided</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setRecitationMode('follow');
+            resetRecitationState();
+          }}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-2 px-2 sm:px-3 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            recitationMode === 'follow'
+              ? 'bg-amber-400 text-stone-950 shadow-md font-extrabold ring-2 ring-amber-500/50'
+              : 'text-stone-700 hover:text-stone-950'
+          }`}
+        >
+          <Radio className="w-3.5 h-3.5 text-emerald-950 shrink-0 animate-pulse" />
+          <span className="truncate">Speech Follower</span>
         </button>
       </div>
 
@@ -1021,15 +1110,61 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
               {/* Reference Audio Listen Button */}
               <button
                 onClick={togglePlayReference}
+                disabled={isLoadingReferenceAudio}
                 className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
-                  isPlayingReferenceAudio
+                  isLoadingReferenceAudio
+                    ? 'bg-amber-100 text-amber-900 border-amber-300 shadow-sm'
+                    : isPlayingReferenceAudio
                     ? 'bg-emerald-800 text-white border-emerald-900 shadow-sm animate-pulse'
                     : 'bg-emerald-50 text-emerald-900 border-emerald-200 hover:bg-emerald-100'
                 }`}
                 title={`Listen to ${currentReciter.nameEnglish}`}
               >
-                <Volume2 className="w-3.5 h-3.5" />
-                <span>{isPlayingReferenceAudio ? 'Playing' : 'Listen'}</span>
+                {isLoadingReferenceAudio ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Volume2 className="w-3.5 h-3.5" />
+                )}
+                <span>
+                  {isLoadingReferenceAudio ? 'Loading...' : isPlayingReferenceAudio ? 'Playing' : 'Listen'}
+                </span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Dedicated Speech Follower Guidance Banner */}
+        {recitationMode === 'follow' && (
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-gradient-to-r from-amber-500/10 via-amber-400/15 to-emerald-500/10 p-3.5 rounded-xl border border-amber-400/50 text-stone-900">
+            <div className="flex items-start gap-3">
+              <div className="p-2 rounded-lg bg-amber-400 text-stone-950 shadow-xs shrink-0 mt-0.5">
+                <Radio className="w-4 h-4 animate-pulse" />
+              </div>
+              <div>
+                <h2 className="text-xs sm:text-sm font-bold text-stone-950 flex items-center gap-2">
+                  <span>Real-Time Speech & Audio Follower</span>
+                  <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-amber-200 text-amber-950 border border-amber-300">
+                    Live Word-by-Word Glow
+                  </span>
+                </h2>
+                <p className="text-xs text-stone-700 mt-0.5 leading-relaxed">
+                  Each word highlights dynamically in amber as you speak into the microphone or as the reference teacher audio plays. Follow along at your own pace!
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={togglePlayReference}
+                disabled={isLoadingReferenceAudio}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer shadow-xs ${
+                  isPlayingReferenceAudio
+                    ? 'bg-amber-400 text-stone-950 border-amber-500 animate-pulse'
+                    : 'bg-white text-stone-800 border-amber-300 hover:bg-amber-50'
+                }`}
+              >
+                {isPlayingReferenceAudio ? <Volume2 className="w-3.5 h-3.5 animate-bounce" /> : <Play className="w-3.5 h-3.5 text-amber-700" />}
+                <span>{isPlayingReferenceAudio ? 'Following Teacher...' : 'Listen & Follow'}</span>
               </button>
             </div>
           </div>
@@ -1136,11 +1271,18 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
               <button
                 type="button"
                 onClick={togglePlayReference}
-                className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-900/80 hover:bg-emerald-800 text-amber-300 border border-amber-400/30 transition-all cursor-pointer"
+                disabled={isLoadingReferenceAudio}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-900/80 hover:bg-emerald-800 text-amber-300 border border-amber-400/30 transition-all cursor-pointer"
                 title="Listen to reference recitation for this identified verse"
               >
-                <Volume2 className="w-3.5 h-3.5" />
-                <span>{isPlayingReferenceAudio ? 'Playing' : 'Listen Reference'}</span>
+                {isLoadingReferenceAudio ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Volume2 className="w-3.5 h-3.5" />
+                )}
+                <span>
+                  {isLoadingReferenceAudio ? 'Loading...' : isPlayingReferenceAudio ? 'Playing' : 'Listen Reference'}
+                </span>
               </button>
             </div>
           </div>
@@ -1181,6 +1323,74 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
           </div>
         </div>
 
+        {/* Speech Follower Live Progress Bar & Word HUD */}
+        {(recitationMode === 'follow' || activeSpeechWordIndex !== null) && (
+          <div className="mb-4 bg-emerald-950/90 rounded-2xl p-3.5 border-2 border-amber-400/40 shadow-inner flex flex-col sm:flex-row items-center justify-between gap-3">
+            <div className="flex items-center gap-3 w-full sm:w-auto">
+              <div className="w-9 h-9 rounded-xl bg-amber-400 text-stone-950 flex items-center justify-center font-bold text-sm shrink-0 shadow-md">
+                {activeSpeechWordIndex !== null ? activeSpeechWordIndex + 1 : '—'}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-[11px] font-bold text-amber-300 uppercase tracking-wider flex items-center gap-2">
+                  <span>
+                    Active Word {activeSpeechWordIndex !== null ? `(${activeSpeechWordIndex + 1} of ${currentAyah.words.length})` : '(Ready for voice)'}
+                  </span>
+                  {recordingState === 'listening' && (
+                    <span className="flex items-center gap-1 text-[10px] text-red-300 bg-red-950/80 px-2 py-0.2 rounded-full border border-red-500/50">
+                      <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-ping" />
+                      Live Mic Tracking
+                    </span>
+                  )}
+                  {isPlayingReferenceAudio && (
+                    <span className="text-[10px] text-amber-200 bg-amber-950/80 px-2 py-0.2 rounded-full border border-amber-500/50">
+                      Teacher Audio Sync
+                    </span>
+                  )}
+                </div>
+                {activeSpeechWordIndex !== null && currentAyah.words[activeSpeechWordIndex] ? (
+                  <div className="flex items-baseline gap-2 mt-0.5 truncate">
+                    <span className="font-arabic text-xl font-bold text-amber-200">
+                      {(currentAyah.words[activeSpeechWordIndex].arabic && currentAyah.words[activeSpeechWordIndex].arabic.trim()) || currentAyah.words[activeSpeechWordIndex].clean}
+                    </span>
+                    <span className="font-sans text-xs text-emerald-200 italic">
+                      ({currentAyah.words[activeSpeechWordIndex].transliteration})
+                    </span>
+                    <span className="text-[11px] text-stone-300 truncate">
+                      "{currentAyah.words[activeSpeechWordIndex].translation}"
+                    </span>
+                  </div>
+                ) : (
+                  <p className="text-xs text-emerald-200 mt-0.5">
+                    {recordingState === 'listening' 
+                      ? 'Speak the words in Arabic — following as you recite...' 
+                      : 'Tap "Start Speech Follower" or "Listen" to watch each word highlight.'}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* Completion Percentage Meter */}
+            <div className="w-full sm:w-44 flex flex-col gap-1 shrink-0">
+              <div className="flex justify-between text-[10px] font-bold text-emerald-300 font-mono">
+                <span>Ayah Progress</span>
+                <span>
+                  {currentAyah.words.length > 0 
+                    ? Math.round(((recitedWordIndices.length) / currentAyah.words.length) * 100) 
+                    : 0}%
+                </span>
+              </div>
+              <div className="w-full h-2 bg-emerald-950 rounded-full overflow-hidden border border-emerald-700/60">
+                <div 
+                  className="h-full bg-gradient-to-r from-amber-500 to-amber-300 rounded-full transition-all duration-300"
+                  style={{
+                    width: `${currentAyah.words.length > 0 ? (recitedWordIndices.length / currentAyah.words.length) * 100 : 0}%`
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Qur'anic Text Display with Word-by-Word Interactivity & Tajweed Highlights */}
         <div className="my-6 min-h-[130px] flex items-center justify-center">
           {recitationMode === 'free' && recordingState === 'idle' && !assessment ? (
@@ -1194,7 +1404,7 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
                   Ready to Recite Freely
                 </h3>
                 <p className="text-xs sm:text-sm text-emerald-200 leading-relaxed font-sans">
-                  Read any Ayah or Surah of your choice at your own pace from your Mushaf or memory. Tap <strong>"Start Reciting"</strong> below, and when you finish, tap <strong>"I'm Done — Pick Up Errors"</strong>!
+                  Read any Ayah or Surah of your choice at your own pace from your Mushaf or memory. Tap <strong>"Start Reciting Freely"</strong> below, and when you finish, tap <strong>"I'm Done — Pick Up Errors"</strong>!
                 </p>
               </div>
             </div>
@@ -1218,52 +1428,81 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
               className="w-full text-center font-quran text-2xl sm:text-3xl md:text-4xl text-[#fdfbf7] leading-loose selection:bg-amber-400/30"
               dir="rtl"
             >
-              {currentAyah.words.map((word, idx) => {
-                const wordAssessed = assessment?.wordAssessments?.find((w: WordTokenAssessment) => w.wordIndex === idx);
-                const wordCorrection = assessment?.corrections?.find((c: PronunciationCorrection) => c.wordIndex === idx);
-                const isSelected = selectedWordIndex === idx;
-                const isError = !!(wordCorrection || wordAssessed?.status === 'needs_attention');
+              {currentAyah.words.length > 0 ? (
+                currentAyah.words.map((word, idx) => {
+                  const wordAssessed = assessment?.wordAssessments?.find((w: WordTokenAssessment) => w.wordIndex === idx);
+                  const wordCorrection = assessment?.corrections?.find((c: PronunciationCorrection) => c.wordIndex === idx);
+                  const isSelected = selectedWordIndex === idx;
+                  const isError = !!(wordCorrection || wordAssessed?.status === 'needs_attention');
+                  const isSpeechActive = activeSpeechWordIndex === idx;
+                  const isAlreadyRecited = recitedWordIndices.includes(idx);
 
-                const highlight = getWordHighlightStyle(
-                  word.activeRules,
-                  isSelected,
-                  isError,
-                  showTajweedHighlights,
-                  selectedCategoryFilter
-                );
+                  // Guaranteed non-empty Arabic text display
+                  const displayArabic = (word.arabic && word.arabic.trim()) || 
+                                        (currentAyah.arabicText?.split(/\s+/)[idx]) || 
+                                        word.clean || 
+                                        '';
 
-                return (
-                  <span
-                    key={idx}
-                    onClick={() => {
-                      setSelectedWordIndex(selectedWordIndex === idx ? null : idx);
-                      if (wordCorrection) {
-                        setIsCorrectionPanelOpen(true);
-                      }
-                    }}
-                    className={`group relative inline-flex flex-col items-center mx-1 sm:mx-1.5 my-1 px-2.5 sm:px-3 py-1.5 rounded-2xl cursor-pointer transition-all duration-200 select-none ${highlight.classes}`}
-                    title={`${word.transliteration} — ${highlight.categoryMeta.nameEnglish}`}
-                  >
-                    <span className="leading-tight">{word.arabic}</span>
+                  const highlight = getWordHighlightStyle(
+                    word.activeRules,
+                    isSelected,
+                    isError,
+                    showTajweedHighlights,
+                    selectedCategoryFilter
+                  );
 
-                    {/* Tajweed Category Dot & Label underneath the word */}
-                    {showTajweedHighlights && highlight.hasRule && !isError && (
-                      <span className="flex items-center gap-1 mt-1 text-[9px] font-sans font-bold tracking-tight opacity-95">
-                        <span className={`w-1.5 h-1.5 rounded-full ${highlight.categoryMeta.dotColor}`} />
-                        <span className="hidden sm:inline-block truncate max-w-[65px]">
-                          {highlight.badgeLabel}
+                  let customHighlightClasses = highlight.classes;
+                  if (isSpeechActive) {
+                    customHighlightClasses = 'bg-amber-400 text-stone-950 font-black shadow-2xl scale-110 ring-4 ring-amber-300 z-20';
+                  } else if (recitationMode === 'follow' && isAlreadyRecited) {
+                    customHighlightClasses = 'bg-emerald-900/90 text-amber-200 border border-amber-400/40';
+                  }
+
+                  return (
+                    <span
+                      key={idx}
+                      onClick={() => {
+                        setSelectedWordIndex(selectedWordIndex === idx ? null : idx);
+                        if (wordCorrection) {
+                          setIsCorrectionPanelOpen(true);
+                        }
+                      }}
+                      className={`group relative inline-flex flex-col items-center mx-1 sm:mx-1.5 my-1.5 px-2.5 sm:px-3 py-1.5 rounded-2xl cursor-pointer transition-all duration-200 select-none ${customHighlightClasses}`}
+                      title={`${word.transliteration} — ${highlight.categoryMeta.nameEnglish}`}
+                    >
+                      <span className="leading-tight font-arabic">{displayArabic}</span>
+
+                      {/* Tajweed Category Dot & Label underneath the word */}
+                      {showTajweedHighlights && highlight.hasRule && !isError && !isSpeechActive && (
+                        <span className="flex items-center gap-1 mt-1 text-[9px] font-sans font-bold tracking-tight opacity-95">
+                          <span className={`w-1.5 h-1.5 rounded-full ${highlight.categoryMeta.dotColor}`} />
+                          <span className="hidden sm:inline-block truncate max-w-[65px]">
+                            {highlight.badgeLabel}
+                          </span>
                         </span>
-                      </span>
-                    )}
+                      )}
 
-                    {isError && (
-                      <span className="block text-[9px] font-sans font-extrabold text-rose-200 bg-rose-950/90 px-1 py-0.2 rounded border border-rose-500/60 mt-0.5 tracking-tight uppercase select-none">
-                        ⚠ Correction
-                      </span>
-                    )}
-                  </span>
-                );
-              })}
+                      {/* Live Speech Indicator badge */}
+                      {isSpeechActive && (
+                        <span className="block text-[8px] font-sans font-black uppercase text-stone-950 tracking-wider mt-0.5">
+                          Reciting ▶
+                        </span>
+                      )}
+
+                      {isError && (
+                        <span className="block text-[9px] font-sans font-extrabold text-rose-200 bg-rose-950/90 px-1 py-0.2 rounded border border-rose-500/60 mt-0.5 tracking-tight uppercase select-none">
+                          ⚠ Correction
+                        </span>
+                      )}
+                    </span>
+                  );
+                })
+              ) : (
+                /* Pure fallback if words array is empty */
+                <span className="leading-loose font-arabic">
+                  {currentAyah.arabicText}
+                </span>
+              )}
               
               {/* Ayah End Symbol */}
               <span className="inline-block text-amber-400 text-2xl mx-2 select-none">
@@ -1470,7 +1709,7 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
         )}
 
         {/* Transliteration & English Translation (when verse is selected/identified) */}
-        {(recitationMode === 'guided' || identifiedPassage) && (
+        {(recitationMode === 'guided' || recitationMode === 'follow' || identifiedPassage) && (
           <div className="border-t border-emerald-800/60 pt-4 space-y-1.5 text-center">
             <p className="text-xs sm:text-sm font-medium text-emerald-200 italic font-sans">
               "{currentAyah.transliteration}"
@@ -1514,7 +1753,13 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
                 className="group relative flex items-center gap-2.5 px-6 py-3.5 rounded-full font-bold text-sm bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-400 text-stone-950 shadow-lg shadow-amber-900/40 transition-all transform active:scale-95 disabled:opacity-50 cursor-pointer"
               >
                 <Mic className="w-5 h-5 text-stone-950 group-hover:scale-110 transition-transform" />
-                <span>{recitationMode === 'free' ? 'Start Reciting Freely' : 'Start Reciting'}</span>
+                <span>
+                  {recitationMode === 'follow'
+                    ? 'Start Speech Follower'
+                    : recitationMode === 'free'
+                    ? 'Start Reciting Freely'
+                    : 'Start Reciting'}
+                </span>
               </button>
             ) : (
               <button
@@ -1522,7 +1767,11 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
                 className="flex items-center gap-2.5 px-6 py-3.5 rounded-full font-bold text-sm bg-red-600 hover:bg-red-500 text-white shadow-lg shadow-red-950/40 transition-all animate-pulse transform active:scale-95 cursor-pointer"
               >
                 <Sparkles className="w-5 h-5 fill-current" />
-                <span>I'm Done — Pick Up Errors</span>
+                <span>
+                  {recitationMode === 'follow'
+                    ? 'Finish Speech Follower'
+                    : "I'm Done — Pick Up Errors"}
+                </span>
               </button>
             )}
 

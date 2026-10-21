@@ -6,3 +6,18 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Android build outputs & IDE
+.gradle/
+android/.gradle/
+android/app/build/
+android/build/
+android/.idea/
+android/*.iml
+android/app/*.iml
+android/local.properties
+android/.cxx/
+
+# Ensure Gradle wrapper jar is committed
+!android/gradle/wrapper/gradle-wrapper.jar
+!gradle-wrapper.jar

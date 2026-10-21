@@ -32,7 +32,28 @@ public class MainActivity extends AppCompatActivity {
         settings.setDatabaseEnabled(true);
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setAllowFileAccess(true);
+        settings.setAllowFileAccessFromFileURLs(true);
+        settings.setAllowUniversalAccessFromFileURLs(true);
         settings.setCacheMode(WebSettings.LOAD_DEFAULT);
+
+        final androidx.webkit.WebViewAssetLoader assetLoader = new androidx.webkit.WebViewAssetLoader.Builder()
+                .addPathHandler("/assets/", new androidx.webkit.WebViewAssetLoader.AssetsPathHandler(this))
+                .build();
+
+        webView.setWebViewClient(new androidx.webkit.WebViewClientCompat() {
+            @Override
+            public android.webkit.WebResourceResponse shouldInterceptRequest(WebView view, android.webkit.WebResourceRequest request) {
+                return assetLoader.shouldInterceptRequest(request.getUrl());
+            }
+
+            @Override
+            public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
+                // Direct fallback to file scheme if asset loader cannot resolve
+                if (failingUrl != null && failingUrl.contains("appassets.androidplatform.net")) {
+                    view.loadUrl("file:///android_asset/public/index.html");
+                }
+            }
+        });
 
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
@@ -59,8 +80,8 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        // Load bundled assets or configured server URL
-        webView.loadUrl("https://localhost");
+        // Load bundled assets over secure Android origin
+        webView.loadUrl("https://appassets.androidplatform.net/assets/public/index.html");
     }
 
     @Override

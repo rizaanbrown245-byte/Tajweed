@@ -1122,7 +1122,45 @@ export function pad3(num: number): string {
 /**
  * In-memory cache for dynamically loaded authentic Ayahs from Tanzil/Quran.com
  */
-const dynamicAyahCache: Record<string, QuranAyah> = {};
+/**
+ * In-memory cache for dynamically loaded authentic Ayahs from Tanzil/Quran.com
+ */
+export const dynamicAyahCache: Record<string, QuranAyah> = {};
+
+/**
+ * Intelligent classical Tajweed rule inference for any Qur'anic word in Uthmani script
+ */
+export function inferRulesForWord(arabic: string): string[] {
+  const rules: string[] = [];
+  
+  // Qalqalah (ق ط ب ج د with sukoon or at word boundary)
+  if (/[قطبجد][ْ]/.test(arabic) || /[قطبجد]$/.test(arabic)) {
+    rules.push('qalqalah_sugra');
+  }
+  // Ghunnah in Mushaddad Noon and Meem (نّ or مّ)
+  if (/[نم][ّ]/.test(arabic)) {
+    rules.push('ghunnah_mushaddadah');
+  }
+  // Madd (prolongation mark ~ or ٓ or dagger alif / ya)
+  if (/[~ٓ]/.test(arabic)) {
+    rules.push('madd_muttasil_munfasil');
+  } else if (/[اويٰ]/.test(arabic)) {
+    rules.push('madd_tabiee');
+  }
+  // Tafkhim / Heavy Letters (Isti'la: خ ص ض غ ط ق ظ)
+  if (/[خصضغطقظ]/.test(arabic)) {
+    rules.push('tafkhim_istila');
+  }
+  // Tanween or Noon Sakinah (Ikhfa / Idgham)
+  if (/[ًٌٍ]/.test(arabic) || /ن[ْ]/.test(arabic)) {
+    rules.push('ikhfa_haqiqi');
+  }
+
+  if (rules.length === 0) {
+    rules.push('makharij_overview', 'sifat_overview');
+  }
+  return rules;
+}
 
 /**
  * Constructs an authentic QuranAyah for any surah and ayah with exact audio for the selected reciter.
@@ -1164,7 +1202,7 @@ export function generateDynamicAyah(surah: number, ayah: number, reciterId: stri
       clean: `الاية ${ayah}`,
       transliteration: `Ayah ${ayah}`,
       translation: `Verse ${ayah}`,
-      activeRules: ['sifat_overview', 'madd_arid_sukoon'],
+      activeRules: ['sifat_overview', 'madd_tabiee'],
       ruleExplanation: `Ayah ${ayah} recitation.`
     }
   ];
@@ -1175,49 +1213,95 @@ export function generateDynamicAyah(surah: number, ayah: number, reciterId: stri
     arabicText: defaultArabic,
     transliteration: `${surahMeta.nameTransliteration} - Ayah ${ayah}`,
     translation: `Verse ${ayah} of Surah ${surahMeta.nameEnglish} (${surahMeta.nameTransliteration}).`,
-    primaryRules: ['makharij_overview', 'sifat_overview', 'madd_arid_sukoon'],
+    primaryRules: ['makharij_overview', 'sifat_overview', 'madd_tabiee'],
     audioUrl,
     words: defaultWords
   };
 }
 
 /**
- * Asynchronously enriches any Ayah with verified Uthmani script and word breakdown from Quran.com public API
+ * Asynchronously enriches any Ayah across all 114 Surahs with verified Uthmani script and word breakdown
  */
-export async function fetchAyahFromAPI(surah: number, ayah: number): Promise<QuranAyah | null> {
+export async function fetchAyahFromAPI(surah: number, ayah: number, reciterId: string = 'maria_ulfah'): Promise<QuranAyah | null> {
   const cacheKey = `${surah}:${ayah}`;
-  if (dynamicAyahCache[cacheKey]) return dynamicAyahCache[cacheKey];
+  if (dynamicAyahCache[cacheKey]) {
+    return {
+      ...dynamicAyahCache[cacheKey],
+      audioUrl: getReciterAudioUrl(reciterId, surah, ayah, dynamicAyahCache[cacheKey].arabicText)
+    };
+  }
 
   try {
-    const res = await fetch(`https://api.quran.com/api/v4/verses/by_key/${surah}:${ayah}?language=en&words=true&fields=text_uthmani,chapter_id`);
-    if (!res.ok) return null;
-    const data = await res.json();
-    const verse = data.verse;
+    let data: any = null;
+
+    // 1. Try high-speed server proxy endpoint
+    try {
+      const localRes = await fetch(`/api/verse/${surah}/${ayah}`);
+      if (localRes.ok) {
+        data = await localRes.json();
+      }
+    } catch {
+      // Local server unavailable, proceed to public fallback
+    }
+
+    // 2. Direct public API fallback with full Uthmani word fields
+    if (!data || !data.verse) {
+      const publicUrl = `https://api.quran.com/api/v4/verses/by_key/${surah}:${ayah}?language=en&words=true&word_fields=text_uthmani&fields=text_uthmani,chapter_id`;
+      const publicRes = await fetch(publicUrl);
+      if (publicRes.ok) {
+        data = await publicRes.json();
+      }
+    }
+
+    const verse = data?.verse;
     if (!verse) return null;
 
-    const words: QuranWord[] = (verse.words || [])
-      .filter((w: { char_type_name: string }) => w.char_type_name !== 'end')
-      .map((w: { text_uthmani: string; translation?: { text: string }; transliteration?: { text: string } }, idx: number) => ({
+    const uthmaniText = (verse.text_uthmani || '').trim();
+    const uthmaniTokens = uthmaniText.split(/\s+/).filter(Boolean);
+
+    const rawWords = (verse.words || []).filter((w: { char_type_name: string }) => w.char_type_name !== 'end');
+    let words: QuranWord[] = rawWords.map((w: { text_uthmani?: string; text?: string; translation?: { text: string }; transliteration?: { text: string } }, idx: number) => {
+      const fallbackToken = uthmaniTokens[idx] || '';
+      const arabicWord = (w.text_uthmani || w.text || fallbackToken).trim();
+      return {
         wordIndex: idx,
-        arabic: w.text_uthmani || '',
-        clean: stripTashkeel(w.text_uthmani || ''),
+        arabic: arabicWord || fallbackToken || `كلمة ${idx + 1}`,
+        clean: stripTashkeel(arabicWord || fallbackToken),
         transliteration: w.transliteration?.text || '',
         translation: w.translation?.text || '',
-        activeRules: ['makharij_overview', 'sifat_overview'],
+        activeRules: inferRulesForWord(arabicWord || fallbackToken),
+        ruleExplanation: `Word ${idx + 1}: ${w.transliteration?.text || ''}${w.translation?.text ? ` (${w.translation.text})` : ''}`
+      };
+    });
+
+    // If word array from API was empty or missing arabic, populate directly from Uthmani text tokens
+    if (words.length === 0 && uthmaniTokens.length > 0) {
+      words = uthmaniTokens.map((token: string, idx: number) => ({
+        wordIndex: idx,
+        arabic: token,
+        clean: stripTashkeel(token),
+        transliteration: `Word ${idx + 1}`,
+        translation: '',
+        activeRules: inferRulesForWord(token),
         ruleExplanation: `Word ${idx + 1} of ${surah}:${ayah}`
       }));
+    }
 
     const surahMeta = ALL_SURAHS_META.find(s => s.number === surah);
+    const fullTranslation = words.map(w => w.translation).filter(Boolean).join(' ') ||
+      `Verse ${ayah} of Surah ${surahMeta?.nameEnglish || surah}`;
+
+    const completeArabic = (uthmaniText || words.map(w => w.arabic).join(' ')).trim();
 
     const generated: QuranAyah = {
       surahNumber: surah,
       ayahNumber: ayah,
-      arabicText: verse.text_uthmani || `${surahMeta?.nameArabic || 'سورة'} آية ${ayah}`,
+      arabicText: completeArabic,
       transliteration: `${surahMeta?.nameTransliteration || 'Surah'} - Ayah ${ayah}`,
-      translation: verse.translations?.[0]?.text?.replace(/<[^>]+>/g, '') || `Verse ${ayah} of Surah ${surahMeta?.nameEnglish || surah}`,
-      primaryRules: ['makharij_overview', 'sifat_overview', 'madd_arid_sukoon'],
-      audioUrl: getReciterAudioUrl('husary', surah, ayah),
-      words: words.length > 0 ? words : generateDynamicAyah(surah, ayah).words
+      translation: fullTranslation,
+      primaryRules: ['makharij_overview', 'sifat_overview', 'madd_tabiee', 'tafkhim_istila'],
+      audioUrl: getReciterAudioUrl(reciterId, surah, ayah, completeArabic),
+      words: words.length > 0 ? words : generateDynamicAyah(surah, ayah, reciterId).words
     };
 
     dynamicAyahCache[cacheKey] = generated;
@@ -1231,11 +1315,26 @@ export async function fetchAyahFromAPI(surah: number, ayah: number): Promise<Qur
 /**
  * Main Ayah getter:
  * Returns the verified Ayah if pre-annotated, or dynamically constructs the authentic Ayah for that surah & ayah with the chosen reciter.
- * NEVER returns 1:1 unless 1:1 was genuinely requested!
  */
 export function getAyah(surah: number, ayah: number, reciterId: string = 'maria_ulfah'): QuranAyah {
   const key = `${surah}:${ayah}`;
-  const baseAyah = VERIFIED_AYAHS[key] || dynamicAyahCache[key] || generateDynamicAyah(surah, ayah, reciterId);
+  if (VERIFIED_AYAHS[key]) {
+    return {
+      ...VERIFIED_AYAHS[key],
+      audioUrl: getReciterAudioUrl(reciterId, surah, ayah, VERIFIED_AYAHS[key].arabicText)
+    };
+  }
+  if (dynamicAyahCache[key]) {
+    return {
+      ...dynamicAyahCache[key],
+      audioUrl: getReciterAudioUrl(reciterId, surah, ayah, dynamicAyahCache[key].arabicText)
+    };
+  }
+
+  // Pre-fetch in background to hydrate cache
+  fetchAyahFromAPI(surah, ayah, reciterId).catch(() => {});
+
+  const baseAyah = generateDynamicAyah(surah, ayah, reciterId);
   return {
     ...baseAyah,
     audioUrl: getReciterAudioUrl(reciterId, surah, ayah, baseAyah.arabicText)

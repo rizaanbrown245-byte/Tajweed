@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Center Gold Crescent & Qur'an Icon Symbol -->
+    <path
+        android:fillColor="#FCD34D"
+        android:pathData="M54,26 C43,26 34,35 34,46 C34,57 43,66 54,66 C51,62 49,57 49,52 C49,43 54,35 62,31 C59.5,27.8 56.8,26 54,26 Z" />
+    <path
+        android:fillColor="#D97706"
+        android:pathData="M38,68 C44,64 50,65 54,68 C58,65 64,64 70,68 L70,80 C64,76 58,77 54,80 C50,77 44,76 38,80 Z" />
+    <path
+        android:fillColor="#FFFBEB"
+        android:strokeColor="#B45309"
+        android:strokeWidth="1"
+        android:pathData="M54,68 L54,80" />
+    <path
+        android:strokeColor="#FBBF24"
+        android:strokeWidth="1.5"
+        android:strokeLineCap="round"
+        android:pathData="M42,83 C46,86 50,86 54,83 C58,86 62,86 66,83" />
+</vector>

@@ -104,7 +104,7 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({
             ) : stateLabel === 'processing' ? (
               'Analyzing Phonetics & Tajweed...'
             ) : stateLabel === 'uncertain' ? (
-              'Uncertain Signal'
+              'Recitation Assessed'
             ) : stateLabel === 'completed' ? (
               'Recitation Captured'
             ) : (

@@ -249,6 +249,44 @@ const VERIFIED_VERSES_TEXT: Record<string, string> = {
   '114:6': 'مِنَ ٱلْجِنَّةِ وَٱلنَّاسِ'
 };
 
+// In-memory cache for verse metadata and word breakdown
+const verseMetadataCache = new Map<string, any>();
+
+// High-speed verse lookup and proxy endpoint for any Surah and Ayah (1:1 to 114:6)
+app.get('/api/verse/:surah/:ayah', async (req, res) => {
+  try {
+    const surah = parseInt(req.params.surah, 10);
+    const ayah = parseInt(req.params.ayah, 10);
+
+    if (isNaN(surah) || isNaN(ayah) || surah < 1 || surah > 114 || ayah < 1) {
+      return res.status(400).json({ error: 'Invalid surah or ayah parameters' });
+    }
+
+    const key = `${surah}:${ayah}`;
+    if (verseMetadataCache.has(key)) {
+      res.setHeader('Cache-Control', 'public, max-age=604800');
+      return res.json(verseMetadataCache.get(key));
+    }
+
+    const apiUrl = `https://api.quran.com/api/v4/verses/by_key/${surah}:${ayah}?language=en&words=true&word_fields=text_uthmani&fields=text_uthmani,chapter_id`;
+    const apiRes = await fetch(apiUrl);
+    if (!apiRes.ok) {
+      return res.status(apiRes.status).json({ error: `Quran API returned ${apiRes.status}` });
+    }
+
+    const data = await apiRes.json();
+    verseMetadataCache.set(key, data);
+    res.setHeader('Cache-Control', 'public, max-age=604800');
+    return res.json(data);
+  } catch (err: unknown) {
+    console.error('Error fetching verse data:', err);
+    res.status(500).json({
+      error: 'Failed to fetch verse',
+      details: err instanceof Error ? err.message : String(err)
+    });
+  }
+});
+
 // High-Fidelity Reciter Audio Generation Endpoint (Pristine Women & Specialized Reciters)
 app.all('/api/reciter-audio', async (req, res) => {
   try {
@@ -257,7 +295,8 @@ app.all('/api/reciter-audio', async (req, res) => {
     const ayah = parseInt(String(req.query.ayah || req.body?.ayah || '1'), 10);
     let verseText = String(req.query.text || req.body?.text || '');
 
-    const cacheKey = `${reciterId}:${surah}:${ayah}`;
+    // Use v2 key to immediately invalidate any legacy cached audio that included introductory English speech
+    const cacheKey = `v2:${reciterId}:${surah}:${ayah}`;
     if (reciterAudioCache.has(cacheKey)) {
       const buffer = reciterAudioCache.get(cacheKey)!;
       res.setHeader('Content-Type', 'audio/wav');
@@ -295,27 +334,25 @@ app.all('/api/reciter-audio', async (req, res) => {
       return res.status(503).json({ error: 'Gemini service not configured for neural audio' });
     }
 
-    // Choose voice and persona for women reciters
+    // Select voice for woman reciters
     let voiceName = 'Zephyr';
-    let personaPrompt = '';
-
     if (reciterId === 'maryam_masud') {
       voiceName = 'Kore';
-      personaPrompt = `You are Qari'ah Maryam Masud. Recite this Holy Qur'anic verse in gentle, calm, measured Tartil with pristine Hafs 'an 'Asim Tajweed rules, crystal-clear vowel elongation, and educational pacing: ${verseText}`;
     } else if (reciterId === 'sumayah_eddeb') {
       voiceName = 'Kore';
-      personaPrompt = `You are Qari'ah Sumayah Eddeb. Recite this Holy Qur'anic verse in classical Egyptian Tartil with resonant ghunnah, exact makharij, and reverent melodic cadence: ${verseText}`;
     } else {
       // Default to Hajjah Maria Ulfah
       voiceName = 'Zephyr';
-      personaPrompt = `You are Hajjah Maria Ulfah, world-renowned Qari'ah and international champion. Recite this sacred Qur'anic verse in classical Mujawwad and Murattal recitation with authentic vocal resonance, measured breath control, and pristine Hafs 'an 'Asim Makharij al-Huruf: ${verseText}`;
     }
+
+    // Pass strictly the Quranic Arabic pronunciation without any English words or introductory speech
+    const cleanArabicPronunciation = verseText.trim();
 
     const ttsResponse = await genAI.models.generateContent({
       model: 'gemini-3.8-flash-lite-tts',
       contents: [{
         role: 'user',
-        parts: [{ text: personaPrompt }]
+        parts: [{ text: cleanArabicPronunciation }]
       }],
       config: {
         responseModalities: ['AUDIO'],
