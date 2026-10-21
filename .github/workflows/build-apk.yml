@@ -1,83 +1,90 @@
-name: Build Android Debug APK
+
+1000415322.jpg
+
+I can see the problem with your Tajweed Android APK GitHub Actions workflow. The build is failing before Java or Gradle even starts because GitHub cannot read your build-apk.yml file.
+
+The error says “Invalid workflow file” and identifies line 1, with several YAML syntax errors.
+
+Step 1: Replace the entire workflow
+Open your GitHub repository, Tajweed.
+
+Go to .github/workflows/build-apk.yml.
+
+Tap the pencil icon to edit the file.
+
+Delete all the existing contents.
+
+Paste this complete workflow:
+
+
+name: Build Android APK
 
 on:
-push:
-branches: [main, master]
-pull_request:
-branches: [main, master]
-workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
 
 permissions:
-contents: read
+  contents: read
 
 jobs:
-build:
-name: Build & Export Android APK
-runs-on: ubuntu-latest
+  build-apk:
+    name: Build APK
+    runs-on: ubuntu-latest
 
-steps:
-  - name: Checkout Repository
-    uses: actions/checkout@v4
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-  - name: Set up Java JDK 17
-    uses: actions/setup-java@v4
-    with:
-      distribution: temurin
-      java-version: '17'
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
 
-  - name: Set up Node.js
-    uses: actions/setup-node@v4
-    with:
-      node-version: '22'
-      cache: npm
-      cache-dependency-path: package-lock.json
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
 
-  - name: Install NPM Dependencies
-    run: |
-      if [ -f package-lock.json ]; then
-        npm ci --legacy-peer-deps
-      else
-        npm install --legacy-peer-deps
-      fi
+      - name: Check project files
+        run: |
+          pwd
+          ls -la
+          test -f package.json
 
-  - name: Build Web Production Assets
-    run: npm run build
+      - name: Install Node dependencies
+        run: npm ci
 
-  - name: Copy Assets to Android WebView
-    run: |
-      test -d dist || (echo "ERROR: dist folder not found after build" && exit 1)
-      mkdir -p android/app/src/main/assets/public
-      cp -r dist/. android/app/src/main/assets/public/
+      - name: Build web application
+        run: npm run build
 
-  - name: Set up Android SDK
-    uses: android-actions/setup-android@v3
+      - name: Install Capacitor packages
+        run: |
+          npm install @capacitor/core @capacitor/cli @capacitor/android
 
-  - name: Verify Android SDK
-    run: |
-      echo "ANDROID_HOME=$ANDROID_HOME"
-      adb version
-      sdkmanager --version
+      - name: Sync Capacitor Android project
+        run: npx cap sync android
 
-  - name: Set up Gradle
-    uses: gradle/actions/setup-gradle@v4
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
 
-  - name: Verify Android Project
-    run: |
-      test -f android/gradlew || (echo "ERROR: android/gradlew is missing" && exit 1)
-      test -f android/settings.gradle -o -f android/settings.gradle.kts || (echo "ERROR: Android Gradle settings file is missing" && exit 1)
-      test -f android/app/build.gradle -o -f android/app/build.gradle.kts || (echo "ERROR: Android app Gradle file is missing" && exit 1)
+      - name: Build debug APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
 
-  - name: Build Debug APK with Gradle
-    working-directory: android
-    run: |
-      chmod +x gradlew
-      ./gradlew assembleDebug --stacktrace
-
-  - name: Upload Debug APK as Artifact
-    if: success()
-    uses: actions/upload-artifact@v4
-    with:
-      name: TajweedAI-debug-apk
-      path: android/app/build/outputs/apk/debug/*.apk
-      retention-days: 30
-      if-no-files-found: error
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tajweed-debug-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
