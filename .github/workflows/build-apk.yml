@@ -1,22 +1,3 @@
-
-1000415322.jpg
-
-I can see the problem with your Tajweed Android APK GitHub Actions workflow. The build is failing before Java or Gradle even starts because GitHub cannot read your build-apk.yml file.
-
-The error says “Invalid workflow file” and identifies line 1, with several YAML syntax errors.
-
-Step 1: Replace the entire workflow
-Open your GitHub repository, Tajweed.
-
-Go to .github/workflows/build-apk.yml.
-
-Tap the pencil icon to edit the file.
-
-Delete all the existing contents.
-
-Paste this complete workflow:
-
-
 name: Build Android APK
 
 on:
