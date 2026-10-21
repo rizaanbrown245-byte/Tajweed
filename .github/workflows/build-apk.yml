@@ -81,4 +81,3 @@ steps:
       path: android/app/build/outputs/apk/debug/*.apk
       retention-days: 30
       if-no-files-found: error
-```
