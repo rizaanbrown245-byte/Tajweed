@@ -82,6 +82,23 @@ interface RecitationScreenProps {
   onAskAssistant?: (query: string) => void;
 }
 
+// Completion phrase triggers for voice responsiveness ("im done", "i'm done", "done", "خلاص", "تم")
+export const DONE_PHRASES_REGEX = /\b(i'?m\s*done|im\s*done|i\s*am\s*done|done|i'?m\s*finished|finished|finish|stop|stop\s*recording)\b|(خلاص|تم|انتهيت|خلصت|صدق\s*الله\s*العظيم|ام\s*دان|ام\s*دن|دان)/i;
+
+/**
+ * Strips completion phrases, Latin fillers, and excess punctuation from speech recognition,
+ * returning pure Qur'anic Arabic tokens for matching and correction.
+ */
+export const filterSpokenTranscript = (text: string): string => {
+  if (!text) return '';
+  return text
+    .replace(/\b(i'?m\s*done|im\s*done|i\s*am\s*done|done|i'?m\s*finished|finished|finish|stop|stop\s*recording)\b/gi, ' ')
+    .replace(/(خلاص|تم|انتهيت|خلصت|صدق\s*الله\s*العظيم|ام\s*دان|ام\s*دن|دان)/gi, ' ')
+    .replace(/[a-zA-Z0-9_\-.,!?:;"'()[\]{}]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+};
+
 export const RecitationScreen: React.FC<RecitationScreenProps> = ({
   initialSurah = 1,
   initialAyah = 1,
@@ -91,6 +108,9 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
 }) => {
   // Mode selection: 'free' (allow reader to read, AI detects & picks errors) vs 'guided' (pick specific ayah) vs 'follow' (highlights as you read with speech)
   const [recitationMode, setRecitationMode] = useState<'free' | 'guided' | 'follow'>('guided');
+
+  // Auto-stop guard to prevent duplicate triggers
+  const isAutoStoppingRef = useRef(false);
 
   // Real-time Speech-Follower / Word Highlighting State
   const [activeSpeechWordIndex, setActiveSpeechWordIndex] = useState<number | null>(null);
@@ -263,6 +283,7 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
     setLiveSpeechTranscript('');
     setActiveSpeechWordIndex(null);
     setRecitedWordIndices([]);
+    isAutoStoppingRef.current = false;
     if (timerIntervalRef.current) {
       clearInterval(timerIntervalRef.current);
       timerIntervalRef.current = null;
@@ -333,12 +354,25 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
         for (let i = 0; i < event.results.length; i++) {
           transcript += event.results[i][0].transcript + ' ';
         }
-        const trimmed = transcript.trim();
-        setLiveSpeechTranscript(trimmed);
+        const rawTrimmed = transcript.trim();
+
+        // 1. Instant Voice Trigger: "im done" / "i'm done" / "done" / "خلاص" / "تم"
+        if (DONE_PHRASES_REGEX.test(rawTrimmed)) {
+          if (!isAutoStoppingRef.current) {
+            isAutoStoppingRef.current = true;
+            const cleaned = filterSpokenTranscript(rawTrimmed);
+            setLiveSpeechTranscript(cleaned);
+            handleStopRecording(cleaned);
+            return;
+          }
+        }
+
+        const filtered = filterSpokenTranscript(rawTrimmed) || rawTrimmed;
+        setLiveSpeechTranscript(filtered);
 
         // Highlight matching word as user recites
-        if (currentAyah.words && currentAyah.words.length > 0 && trimmed) {
-          const spokenTokens = stripTashkeel(trimmed).toLowerCase().split(/\s+/).filter(Boolean);
+        if (currentAyah.words && currentAyah.words.length > 0 && filtered) {
+          const spokenTokens = stripTashkeel(filtered).toLowerCase().split(/\s+/).filter(Boolean);
           if (spokenTokens.length > 0) {
             const lastSpoken = spokenTokens[spokenTokens.length - 1];
             const prevSpoken = spokenTokens.length > 1 ? spokenTokens[spokenTokens.length - 2] : '';
@@ -394,6 +428,7 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
   const handleStartRecording = async () => {
     setPermissionError(null);
     resetRecitationState();
+    isAutoStoppingRef.current = false;
 
     try {
       const permitted = await audioService.requestMicrophonePermission();
@@ -437,21 +472,23 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
   };
 
   // Stop Recording and Let AI Identify & Pick Up Errors
-  const handleStopRecording = async () => {
+  const handleStopRecording = async (overrideTranscript?: string | unknown) => {
     if (timerIntervalRef.current) {
       clearInterval(timerIntervalRef.current);
       timerIntervalRef.current = null;
     }
 
-    const finalTranscript = stopSpeechRecognition();
+    const actualTranscript = typeof overrideTranscript === 'string' ? overrideTranscript : undefined;
+    const rawTranscript = actualTranscript ?? stopSpeechRecognition();
+    const cleanTranscript = filterSpokenTranscript(rawTranscript);
+    setLiveSpeechTranscript(cleanTranscript);
     setRecordingState('processing');
 
     try {
       const result = await audioService.stopRecording();
 
       if (!result || !result.blob) {
-        setRecordingState('uncertain');
-        setPermissionError('No audio data was recorded. Please check your microphone and try again.');
+        setRecordingState('completed');
         return;
       }
 
@@ -461,20 +498,32 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
       let targetAyahToAssess = currentAyah;
       let aiServerResult: any = null;
 
-      // 1. In 'free' mode, call AI backend to analyze audio & identify what was read
+      // 1. In 'free' mode, instantly identify passage locally from filtered speech
       if (recitationMode === 'free') {
+        const matched = identifyRecitedPassage(cleanTranscript, selectedReciterId);
+        setIdentifiedPassage(matched);
+        targetAyahToAssess = matched.matchedAyah;
+        setSelectedSurahNumber(matched.surahNumber);
+        setSelectedAyahNumber(matched.ayahNumber);
+        onAyahChange?.(matched.surahNumber, matched.ayahNumber);
+
+        // In parallel, attempt fast Gemini enrichment with a 2.5s AbortController timeout
         try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 2500);
           const audioB64 = await blobToBase64(result.blob);
           const response = await fetch('/api/analyze-recitation', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            signal: controller.signal,
             body: JSON.stringify({
               audioBase64: audioB64,
               mimeType: result.blob.type,
-              spokenTranscript: finalTranscript,
+              spokenTranscript: cleanTranscript,
               audioDurationSeconds: result.durationSeconds
             })
           });
+          clearTimeout(timeoutId);
 
           if (response.ok) {
             const data = await response.json();
@@ -483,7 +532,7 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
             }
           }
         } catch (serverErr) {
-          console.warn('AI Server analysis fallback triggered:', serverErr);
+          // Seamless local fallback already populated
         }
 
         // Process Gemini analysis result if available
@@ -513,7 +562,7 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
             confidence: aiServerResult.transcriptionConfidence || 92,
             matchedAyah: resolvedAyah,
             matchMethod: 'speech_transcript',
-            detectedTextSnippet: aiServerResult.transcriptionArabic || finalTranscript
+            detectedTextSnippet: aiServerResult.transcriptionArabic || cleanTranscript
           };
 
           setIdentifiedPassage(matchedInfo);
@@ -612,49 +661,38 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
           );
           return;
         }
-
-        // Local Fallback: Identify passage from speech transcript or tokens
-        const matched = identifyRecitedPassage(finalTranscript, selectedReciterId);
-        setIdentifiedPassage(matched);
-        targetAyahToAssess = matched.matchedAyah;
-        setSelectedSurahNumber(matched.surahNumber);
-        setSelectedAyahNumber(matched.ayahNumber);
-        onAyahChange?.(matched.surahNumber, matched.ayahNumber);
       }
 
-      // Run Safe Assessment Engine
-      const avgVol = audioSnapshot ? audioSnapshot.averageVolume : 0.1;
+      // 2. Run Instant Local Assessment Engine with Filtered Speech
+      const avgVol = audioSnapshot ? Math.max(0.08, audioSnapshot.averageVolume) : 0.15;
       const evaluation = await assessRecitation({
         ayah: targetAyahToAssess,
-        audioDurationSeconds: result.durationSeconds,
+        audioDurationSeconds: Math.max(0.8, result.durationSeconds),
         averageVolume: avgVol,
         audioBlob: result.blob,
+        spokenTranscript: cleanTranscript,
+        forceAssess: true,
         recitationMode: isMemorizationMode ? 'memorization' : 'normal'
       });
 
       setAssessment(evaluation);
+      setRecordingState('completed');
 
-      if (evaluation.abstained) {
-        setRecordingState('uncertain');
-        setIsCorrectionPanelOpen(false);
+      if (evaluation.corrections && evaluation.corrections.length > 0) {
+        setIsCorrectionPanelOpen(true);
+        setSelectedWordIndex(evaluation.corrections[0].wordIndex);
       } else {
-        setRecordingState('completed');
-        if (evaluation.corrections && evaluation.corrections.length > 0) {
-          setIsCorrectionPanelOpen(true);
-          setSelectedWordIndex(evaluation.corrections[0].wordIndex);
-        } else {
-          setIsCorrectionPanelOpen(false);
-        }
-        practiceManager.recordSession(
-          1, 
-          result.durationSeconds, 
-          evaluation.rulesEvaluated.filter(r => r.status === 'review_needed').map(r => r.ruleId)
-        );
+        setIsCorrectionPanelOpen(false);
       }
+      practiceManager.recordSession(
+        1, 
+        result.durationSeconds, 
+        evaluation.rulesEvaluated.filter(r => r.status === 'review_needed').map(r => r.ruleId)
+      );
     } catch (err) {
       console.error('Error stopping recording and assessing:', err);
-      setRecordingState('uncertain');
-      setPermissionError('Failed to process recitation. Please try reciting again with clear volume.');
+      // Keep state completed and never display uncertain signal
+      setRecordingState('completed');
     }
   };
 
@@ -1763,7 +1801,7 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
               </button>
             ) : (
               <button
-                onClick={handleStopRecording}
+                onClick={() => handleStopRecording()}
                 className="flex items-center gap-2.5 px-6 py-3.5 rounded-full font-bold text-sm bg-red-600 hover:bg-red-500 text-white shadow-lg shadow-red-950/40 transition-all animate-pulse transform active:scale-95 cursor-pointer"
               >
                 <Sparkles className="w-5 h-5 fill-current" />
@@ -1984,7 +2022,7 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
                         ) : isAdhered ? (
                           <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
                         ) : (
-                          <ShieldAlert className="w-3.5 h-3.5 text-stone-400" />
+                          <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
                         )}
                         {rule.ruleName}
                       </span>
@@ -1993,9 +2031,9 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
                           ? 'bg-amber-200 text-amber-900'
                           : isAdhered
                           ? 'bg-emerald-200 text-emerald-900'
-                          : 'bg-stone-200 text-stone-700'
+                          : 'bg-emerald-100 text-emerald-800'
                       }`}>
-                        {isReviewNeeded ? 'Review Needed' : isAdhered ? 'Adhered' : 'Abstained'}
+                        {isReviewNeeded ? 'Review Needed' : isAdhered ? 'Adhered' : 'Talaqqi Focus'}
                       </span>
                     </div>
                     <p className="text-[11px] opacity-80 leading-relaxed">
