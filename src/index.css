@@ -42,3 +42,21 @@
 .pt-safe {
   padding-top: env(safe-area-inset-top, 1rem);
 }
+
+/* Audio wave equalizer keyframe animation for frequency visualizer */
+@keyframes audio-wave-bounce {
+  0%, 100% {
+    transform: scaleY(0.2);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+}
+
+.animate-audio-wave {
+  animation: audio-wave-bounce 0.9s ease-in-out infinite;
+  transform-origin: bottom;
+}
+

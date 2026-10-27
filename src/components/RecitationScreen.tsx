@@ -70,7 +70,7 @@ import { audioService, AudioAnalysisSnapshot } from '../domain/audio/audioServic
 import { assessRecitation, TEACHER_DISCLAIMER } from '../domain/assessment/assessmentEngine';
 import { PronunciationCorrection, RecitationAssessmentResult, WordTokenAssessment } from '../domain/tajweed/types';
 import { getRuleById } from '../domain/tajweed/knowledgeBase';
-import { WaveformVisualizer } from './WaveformVisualizer';
+import { WaveformVisualizer, CssFrequencyVisualizer } from './WaveformVisualizer';
 import { CorrectionPanel } from './CorrectionPanel';
 import { practiceManager } from '../domain/learning/practiceManager';
 
@@ -1552,10 +1552,16 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
 
         {/* Live Spoken Speech Preview (while reading in Free Reciter Mode) */}
         {recordingState === 'listening' && (
-          <div className="mb-4 bg-emerald-950/80 rounded-2xl p-3 border border-emerald-700/60 animate-pulse text-center">
-            <div className="flex items-center justify-center gap-2 text-xs font-semibold text-emerald-300">
-              <span className="w-2 h-2 rounded-full bg-red-500 animate-ping" />
+          <div className="mb-4 bg-emerald-950/80 rounded-2xl p-3 border border-emerald-700/60 shadow-lg text-center">
+            <div className="flex items-center justify-center gap-3 text-xs font-semibold text-emerald-300">
+              <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-ping" />
               <span>Listening to your Qur'anic recitation...</span>
+              <CssFrequencyVisualizer 
+                active={true} 
+                volume={audioSnapshot?.averageVolume || 0.25} 
+                barCount={10} 
+                className="h-3.5 ml-1" 
+              />
             </div>
             {liveSpeechTranscript && (
               <p className="mt-1 font-arabic text-lg text-amber-200" dir="rtl">
@@ -1770,7 +1776,7 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
         {/* Prominent Recording Controls */}
         <div className="mt-6 flex flex-col sm:flex-row items-center justify-between gap-4 bg-emerald-900/40 border border-emerald-700/40 rounded-2xl p-4">
           
-          {/* Recording Timer & Status */}
+          {/* Recording Timer, Status & Live Wave Visualizer */}
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2">
               <span className="text-xs font-mono text-emerald-300 bg-emerald-950/80 px-2.5 py-1 rounded-lg border border-emerald-800">
@@ -1780,6 +1786,14 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
                 {recordingState === 'listening' ? 'Listening...' : recordingState === 'processing' ? 'AI Analyzing & Detecting Errors...' : 'Ready'}
               </span>
             </div>
+            {recordingState === 'listening' && (
+              <CssFrequencyVisualizer
+                active={true}
+                volume={audioSnapshot?.averageVolume || 0.25}
+                barCount={10}
+                className="h-4"
+              />
+            )}
           </div>
 
           {/* Central Microphone / Stop & Analyze Button */}
@@ -1802,14 +1816,25 @@ export const RecitationScreen: React.FC<RecitationScreenProps> = ({
             ) : (
               <button
                 onClick={() => handleStopRecording()}
-                className="flex items-center gap-2.5 px-6 py-3.5 rounded-full font-bold text-sm bg-red-600 hover:bg-red-500 text-white shadow-lg shadow-red-950/40 transition-all animate-pulse transform active:scale-95 cursor-pointer"
+                className="relative flex items-center gap-2.5 px-6 py-3.5 rounded-full font-bold text-sm bg-red-600 hover:bg-red-500 text-white shadow-lg shadow-red-950/40 transition-all transform active:scale-95 cursor-pointer overflow-hidden"
               >
-                <Sparkles className="w-5 h-5 fill-current" />
-                <span>
+                {/* Visual audio wave ripple aura */}
+                <span className="absolute -inset-1 rounded-full bg-red-500/30 animate-ping pointer-events-none" />
+                <span className="absolute inset-0 rounded-full border border-red-400/50 animate-pulse pointer-events-none" />
+                <Sparkles className="w-5 h-5 fill-current relative z-10" />
+                <span className="relative z-10">
                   {recitationMode === 'follow'
                     ? 'Finish Speech Follower'
                     : "I'm Done — Pick Up Errors"}
                 </span>
+                <div className="relative z-10 ml-1">
+                  <CssFrequencyVisualizer
+                    active={true}
+                    volume={audioSnapshot?.averageVolume || 0.3}
+                    barCount={6}
+                    className="h-3.5"
+                  />
+                </div>
               </button>
             )}
 
