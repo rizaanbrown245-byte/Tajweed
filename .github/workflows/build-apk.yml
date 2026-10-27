@@ -1,15 +1,11 @@
 
-name: Build Android APK
+name: Build Tajweed Android APK
 
 on:
   push:
-    branches:
-      - main
-      - master
+    branches: [main, master]
   pull_request:
-    branches:
-      - main
-      - master
+    branches: [main, master]
   workflow_dispatch:
 
 permissions:
@@ -17,7 +13,7 @@ permissions:
 
 jobs:
   build-apk:
-    name: Build APK
+    name: Build and Export APK
     runs-on: ubuntu-latest
 
     steps:
@@ -56,8 +52,7 @@ jobs:
         run: npm run build
 
       - name: Install Capacitor packages
-        run: |
-          npm install --legacy-peer-deps @capacitor/core @capacitor/cli @capacitor/android
+        run: npm install --legacy-peer-deps @capacitor/core @capacitor/cli @capacitor/android
 
       - name: Verify Capacitor configuration
         run: |
@@ -74,18 +69,30 @@ jobs:
         run: npx cap sync android
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+
+      - name: Check Android project
+        run: |
+          test -d android
+          test -f android/gradlew
+          test -f android/app/build.gradle || test -f android/app/build.gradle.kts
+          echo "Android project files found"
 
       - name: Build debug APK
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew assembleDebug --stacktrace
+
+      - name: Verify APK
+        run: |
+          test -f android/app/build/outputs/apk/debug/app-debug.apk
+          ls -lh android/app/build/outputs/apk/debug/app-debug.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Tajweed-debug-APK
-          path: android/app/build/outputs/apk/debug/*.apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
