@@ -1,3 +1,4 @@
+
 name: Build Android APK
 
 on:
@@ -23,10 +24,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js 20
+      - name: Set up Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
 
       - name: Set up Java 17
@@ -40,9 +41,16 @@ jobs:
           pwd
           ls -la
           test -f package.json
+          node --version
+          npm --version
 
       - name: Install Node dependencies
-        run: npm ci --legacy-peer-deps || npm install --legacy-peer-deps
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci --legacy-peer-deps || npm install --legacy-peer-deps
+          else
+            npm install --legacy-peer-deps
+          fi
 
       - name: Build web application
         run: npm run build
@@ -51,6 +59,17 @@ jobs:
         run: |
           npm install --legacy-peer-deps @capacitor/core @capacitor/cli @capacitor/android
 
+      - name: Verify Capacitor configuration
+        run: |
+          npx cap --version
+          if [ ! -f capacitor.config.ts ] && \
+             [ ! -f capacitor.config.js ] && \
+             [ ! -f capacitor.config.json ] && \
+             [ ! -f capacitor.config.mjs ]; then
+            echo "ERROR: Capacitor configuration file not found."
+            exit 1
+          fi
+
       - name: Sync Capacitor Android project
         run: npx cap sync android
 
@@ -58,8 +77,8 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Build debug APK
+        working-directory: android
         run: |
-          cd android
           chmod +x gradlew
           ./gradlew assembleDebug
 
@@ -67,5 +86,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Tajweed-debug-APK
-          path: android/app/build/outputs/apk/**/*.apk
-          if-no-files-found: warn
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
